@@ -1,0 +1,20 @@
+---
+title: "Notebook"
+format: html
+editor: visual
+---
+
+Project: Using ALPS to understand taxane metabolic pathway and breast cancer recurrence
+
+Created: February 2024
+
+Author: Chrystelle Kiang
+
+```{r}
+#| echo: true
+#| warning: false
+
+# set up
+library(here)
+library(tidyverse)
+```
