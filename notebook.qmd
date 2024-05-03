@@ -2,6 +2,8 @@
 title: "Notebook"
 format: html
 editor: visual
+editor_options: 
+  chunk_output_type: console
 ---
 
 Project: Using ALPS to understand taxane metabolic pathway and breast cancer recurrence
@@ -17,4 +19,69 @@ Author: Chrystelle Kiang
 # set up
 library(here)
 library(tidyverse)
+```
+
+Plan:
+
+-   code taxane pathway prior forest
+
+-   test on scrambled dataset
+
+After discussion with Danish crew (Cathrine, Dee, Tore), Tom, and Tim, we have the following pathway as of end of Nov 2023. Also after discussion, will differ from tamoxifen work in that we will look at haplotypes as well.
+
+![](images/docetaxelpathway-01.png){fig-align="center"}
+
+Want to encode the direct paths between two 'nodes'; either 1 or 2 steps. So these include:\
+docetaxel -\> (1,1) -\> docetaxel in liver\
+docetaxel -\> (1,1) -\> docetaxel in liver -\> (3,3) -\> metabolite\
+docetaxel in liver -\> (3,3) -\> metabolite\
+docetaxel in liver -\> (3,3) -\> metabolite -\> (5,5) -\> excreted metabolite
+
+I'm going to start without haplotypes for now and will come back to edit
+
+First, using R to create permutations based on imported file with SNPs, rs, and "step" as per diagram above.
+
+```{r}
+snp_list <- read_csv("./pathwaysnps.csv", show_col_types = FALSE)
+
+pair_off <- function(dataset, combos){
+  all_pairs <- list()
+  for (combos in combos){
+    subset1 <- filter(dataset, step == combos[1])
+    subset2 <- filter(dataset, step == combos[2])
+#    paired_list <- expand.grid(SNP1 = subset1$SNP, rs1 = subset1$rs, step1 = subset1$step, SNP2 = subset2$SNP,rs2 = subset2$rs, step2 = subset2$step, stringsAsFactors = FALSE)
+    paired_list <- expand.grid(rs1 = subset1$rs, rs2 = subset2$rs, stringsAsFactors = FALSE)
+    
+  all_pairs[[paste(combos, collapse = "&")]] <- paired_list
+  }
+  return(all_pairs)
+}
+
+# note function doesn't remove same rs pairings
+prior_pairs <- list(c(1,1), c(2,2), c(3,3), c(4,4), c(5,5), c(1,3), c(3,5), c(2,4))
+
+new_list <- pair_off(snp_list, prior_pairs)
+new_snp_list <- do.call(rbind, new_list)
+
+# want to link snp names and step number back to rs 
+snp_names1 <- snp_list %>%
+  rename(snp1 = SNP,
+         rs1 = rs,
+         step1 = step)
+snp_names2 <- snp_list %>%
+  rename(snp2 = SNP,
+         rs2 = rs,
+         step2 = step)
+
+new_snp_list <- new_snp_list %>% 
+  # have to delete same snp pairs (i think)
+  filter(rs1 != rs2) %>%
+  left_join(snp_names1, by="rs1", relationship = "many-to-many") %>%
+  left_join(snp_names2, by="rs2", relationship = "many-to-many") %>%
+  distinct()
+
+prior_forest <- new_snp_list[, c("snp1", "rs1", "step1", "snp2", "rs2", "step2")]  %>%
+  mutate(prior = paste("(",new_snp_list$step1,",",new_snp_list$step2,");", sep = ""))
+
+write_csv(prior_forest, "./priorforest.csv")
 ```
