@@ -6,11 +6,11 @@ editor_options:
   chunk_output_type: console
 ---
 
-Project: Using ALPS to understand taxane metabolic pathway and breast cancer recurrence
-
-Created: February 2024
+Project: Using ALPS for taxane metabolic pathway and breast cancer recurrence
 
 Author: Chrystelle Kiang
+
+Last updated: July 2, 2024
 
 ```{r}
 #| echo: true
@@ -28,111 +28,58 @@ library(stringr)
 # other 
 library(survival)
 library(ggplot2)
+library(gtsummary)
+library(gt)
 ```
-
-Plan:
-
--   code taxane pathway prior forest - done?
-
--   test on scrambled dataset
 
 ### Prior forest
 
-After discussion with Danish crew (Cathrine, Dee, Tore), Tom, and Tim, we have the following pathway as of end of Nov 2023. Also after discussion, will differ from tamoxifen work in that we will look at haplotypes as well.
+After discussion with Cathrine, Dee, Tore, Tom, and Tim, we have the following pathway as of end of Nov 2023. To consider *SLCO1B1* and *ABCB1* haplotypes. Most genes only have one SNP, except: *SLCO1B1* (2), *CYP3A4* (2), and *ABCB1* (4).
 
-![](images/docetaxelpathway.png){fig-align="center"}
+![](images/taxanepathway.jpg){fig-align="center"}
 
-Want to encode the direct paths between two 'nodes'; either 1 or 2 steps. So these include:\
-docetaxel -\> (1,1) -\> docetaxel in liver\
-docetaxel -\> (1,1) -\> docetaxel in liver -\> (3,3) -\> metabolite\
-docetaxel in liver -\> (3,3) -\> metabolite\
-docetaxel in liver -\> (3,3) -\> metabolite -\> (5,5) -\> excreted metabolite
+Want to encode the direct paths between two 'nodes'; either 1 or 2 steps (based on tam). Examples:\
+(1,1): docetaxel -\> (1,1) -\> docetaxel in liver\
+(1,3): docetaxel -\> (1,1) -\> docetaxel in liver -\> (3,3) -\> metabolite in liver\
+(3,3): docetaxel in liver -\> (3,3) -\> metabolite in liver\
+(3,5): docetaxel in liver -\> (3,3) -\> metabolite -\> (5,5) -\> plasma concentration
 
-I'm going to start without haplotypes for now and will come back to edit. I think that may be specified when we specify rs?
+Decision is no haplotypes for this project; could perhaps be done later but would be more involved because we don't have chromosome level info. But to be done, it might involve changing what the aliases represent where instead of individual rs they could be combinations.
 
-Using R to create permutations based on imported file with SNPs and step/locus number as per diagram above.
-
-```{r}
-#| label: generate-forest
-snp_list <- read_csv("./data/pathwaysnp_rs.csv", show_col_types = FALSE)
-
-pair_off <- function(dataset, combos){
-  all_pairs <- list()
-  for (combo in combos){
-    subset1 <- filter(dataset, step == combo[1])
-    subset2 <- filter(dataset, step == combo[2])
-    paired_list <- expand.grid(snp1 = subset1$alias, snp2 = subset2$alias, stringsAsFactors = FALSE)
-    
-  all_pairs[[paste(combo, collapse = "&")]] <- paired_list
-  }
-  return(all_pairs)
-}
-
-# note function doesn't remove same snp pairings
-prior_pairs <- list(c(1,1), c(2,2), c(3,3), c(4,4), c(5,5), c(1,3), c(3,5), c(2,4))
-
-new_list <- pair_off(snp_list, prior_pairs)
-new_snp_list <- do.call(rbind, new_list)
-
-# want to link step number back to rs 
-snp_names1 <- snp_list %>%
-  rename(snp1 = alias,
-         step1 = step)
-snp_names2 <- snp_list %>%
-  rename(snp2 = alias,
-         step2 = step)
-
-new_snp_list <- new_snp_list %>% 
-  # have to delete same snp pairs (i think)
-  filter(snp1 != snp2) %>%
-  left_join(snp_names1, by="snp1", relationship = "many-to-many") %>%
-  left_join(snp_names2, by="snp2", relationship = "many-to-many") %>%
-  distinct()
-
-prior_forest <- new_snp_list[, c("snp1", "step1", "snp2", "step2")]  %>%
-  mutate(prior = paste("(",new_snp_list$step1,",",new_snp_list$step2,");", sep = "")) %>%
-  # seemed like some combinations I didn't want still occuring
-  filter(prior %in% c("(1,1);", "(2,2);", "(3,3);", "(4,4);", "(5,5);", "(1,3);", "(3,5);", "(2,4);")) %>%
-  select(-step1, -step2)
-
-# creating duplicate for backup
-prior_forest_save <- prior_forest 
-write_csv(prior_forest, "./data/priorforest.csv")
-```
-
-Trying out scrambled data. Changed some of the names to match our aliases.
+Trying out with scrambled data, but changed the names to match our study SNPs and only kept those.
 
 ```{r}
-#| label: sim-data
-original <- read_csv(file = "./data/simpath_cohort_scram.csv")
+#| label: read-csvs
+#| warning: false
+#| message: false
+#| results: hide
+
+# import prior forest, created in: ./create prior.qmd
+prior_forest <- read_csv("./data/priorforest.csv", show_col_types = FALSE)
+prior.forest <- subset(prior_forest, select = c("snp1","snp2"))
+
+# import scrambled dataset
 simgeno <- read_csv(file = "./data/simpath_cohort_scramCK.csv", show_col_types = FALSE)
+# only keeping snp names we are using
 simgeno <- simgeno %>%
   select(-abc10, -c(abc7:abc9), -c(cyp10:cyp14), -c(cyp6:cyp9), -sul5, -ugt2, -ugt3, -sul2)
-names(simgeno)
-print("Number of events")
-table(simgeno$event)
 ```
 
 #### ALPS analysis
 
-Largely based on Tom's code on github. Note to self: there are certain variable names that ALPS expects (namely, those with a .)
+Based on Tom's code on github. Running the prior only run in prior-only.R for now, but I wonder if it I should incorporate into just one step.
 
 ```{r}
 #| label: run-alps
+#| message: false
+#| warning: false
+#| results: hide
 
 source(file = paste0("./ALPS/alps2.R"))
-
-# prior forest
-prior.forest <- subset(prior_forest,select=c("snp1","snp2"))
-
-load(file = paste0("./ALPS/cpsi.RData"))
-
-# read in simulated cohort pathway data above
-# head(simgeno)
+load(file = paste0("./data/cpsi_taxane.RData"))
 
 # Set up run
 ds <- simgeno %>% arrange(time)
-# this has to be time.var (as opposed to _)
 time.var <- ds$time
 status.var <- simgeno$event
 dos <- ds %>%
@@ -143,17 +90,15 @@ dos <- ds %>%
          xn = NULL)
 dos <- t(as.matrix(dos))
 
-
-# initialize ALPS
 # need to specify wd where output will be saved
-wd <- here("betaresults") 
+wd <- here("output") 
 set.seed(404)
 # start at random spot
 spot <- prior.forest[sample(nrow(prior.forest),1),]
 spot.tree <- paste0("(", spot$snp1, ",", spot$snp2, ");")
 curtree <- read.tree(text = spot.tree)
-# start with low number to test out
-system.time(fitalps(iter = 100,
+# starting with low number to check feasibility 
+system.time(fitalps(iter = 1000,
                     initipsi = 19,
                     curtree,
                     normpotts = FALSE,
@@ -162,9 +107,9 @@ system.time(fitalps(iter = 100,
                     prefix="/logs"))
 ```
 
-Note that I have changed some of folder names/saving. There is probably be a reason why they have these saved in the specific way but... until I figure that out I'll keep it the way it is now.
+Alright so it ran with the scrambled data and my attempt at a prior forest. The output messages show in the console but not after chunk (for now).
 
-Note from Tom's guide: to get prior probabilities, set `prioronly=TRUE` so ALPS doesn't include observed data. Then run with `prioronly=FALSE` to get posterior probabilites (using observed data).
+Next, summarize results.
 
 ```{r}
 #| label: ALPS-summarize
@@ -175,12 +120,13 @@ fspsi <- fread(paste0("./betaresults/logs-psi.txt"), sep = "\t", header = TRUE)
 fsparameters <- fread(paste0("./betaresults/logs-tree-parameters.txt"), sep = "\t", header = TRUE)
 fsthetas <- fread(paste0("./betaresults/logs-tree-thetas.txt"), sep = "\t", header = TRUE)
 
-# check hyperparameter
+# check hyperparameter, looking for a spread/range 
 table(fspsi$psi)
 
 # completed iterations
 niter <- nrow(fssampler)
 niter
+
 # acceptance rate for proposed changes
 length(fssampler$accept[fssampler$accept == TRUE])/nrow(fssampler)
 
@@ -203,14 +149,13 @@ treepost$post <- treepost$count/nrow(fssampler)
 treepost$perc <- treepost$post*100
 treeprior <- mean(treepost$post)
 treepost$BF <- round((treepost$post/(1-treepost$post))/(treeprior/(1-treeprior)),0)
-print(treepost)
+# print(treepost)
+gt(treepost)
 ```
-
-Can create a different tabular output for sharing... eventually.
 
 ```{r}
 #| label: posterior-odds
-
+#| tbl-cap: "Main posterior"
 text <- paste(treepost$tree,";",sep = "")
 temp <- read.tree(text = text)
 getlabels <- function(tree){
@@ -228,43 +173,77 @@ mainpost <- data.frame(count = main, post = main/niter)
 
 # Bayes factors (BF)
 mainprior <- mean(mainpost$post)
-mainpost$bf <- round((mainpost$post/(1-mainpost$post))/(mainprior/(1-mainprior)),0)
-# Genetic factor marginal posteriors 
-mainpost
+mainpost$bf <- round((mainpost$post/(1 - mainpost$post))/
+                       (mainprior/(1 - mainprior)),0)
+
+# Genetic factor marginal posteriors
+# mainpost
+gt(mainpost,
+   rownames_to_stub = TRUE)
+```
+
+```{r}
+#| tbl-cap: "Trees with BF>=1"
 
 # parameters for any tree with BF >= 1
 treepost$perc <- round(treepost$post*100)
 s <- subset(treepost,BF>=1)
-s
+gt(s)
 
 s2 <- subset(mainpost, bf >= 1)
 
 # plot cladograms of selected tree structures
 par(mfrow = c(2,2))
 
+s3 <- data.frame(
+  tree = character(),
+  beta = numeric(),
+  theta.1 = numeric(),
+  theta.2 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+
 for (i in 1:nrow(s)) {
-	print(s$tree[i])
-	ti <- min(fstree[fstree$tree==s$tree[i]]$treeindex)
+	# print(s$tree[i])
+	ti <- min(fstree[fstree$tree == s$tree[i]]$treeindex)
 	tiparam <- subset(fsparameters, treeindex == ti)
-	print(tiparam)
+	# print(tiparam)
 	tithetas <- subset(fsthetas, treeindex == ti)
-	print(tithetas)
-	t <- read.tree(text=paste0(s$tree[i],";"))
-	plot(t,root.edge = TRUE, main = paste0("Posterior: ", s$perc[i], "% BF:",s$BF[i]), type="cladogram", sub = paste0("beta=",round(tiparam$beta,2)))
-	edgelabels(round(as.vector(t(subset(tithetas,select = c("theta.1","theta.2")))),2))
+	# print(tithetas)
+	t <- read.tree(text = paste0(s$tree[i], ";"))
+	plot(t,root.edge = TRUE, main = paste0("Posterior: ", s$perc[i], "% BF:", s$BF[i]), type = "cladogram", sub = paste0("beta=", round(tiparam$beta, 2)))
+	edgelabels(round(as.vector(t(subset(tithetas, select = c("theta.1", "theta.2")))), 2))
 	#par(ask=TRUE) 
+	  s3 <- rbind(s3, data.frame(
+    tree = s$tree[i],
+    treeindex = tiparam$treeindex,
+    beta = tiparam$beta,
+    nnodes = tiparam$nnodes,
+    negloglike = tiparam$negloglik,
+    logpost = tiparam$logpost,
+    distance = tiparam$distance,
+    theta.1 = tithetas$theta.1,
+    theta.2 = tithetas$theta.2
+  ))
 }
+
+s3 %>%
+  mutate(beta = round(beta, 2),
+         theta.1  = round(theta.1, 2),
+         theta.2  = round(theta.2, 2)) %>%
+  gt()
+
 ```
 
 So we get some trees!
 
-Next, provide some context:
-
 ```{r}
+#| label: context
 path <- read.csv("./data/taxane_summ.csv", header = TRUE)
 
 path_names <- names(path)[4:8]
-
+concept_names <- data.frame()
 for (i in path_names){
   cur <- subset(path, !is.na(path[i]))
   
@@ -276,8 +255,13 @@ for (i in path_names){
     }	
   }
   concept.post <- concept.post/niter
-  print(paste0("concept:", i , " posterior:", concept.post))
+  # print(paste0("concept:", i , " posterior:", concept.post))
+  concept_names <- rbind(concept_names, data.frame(
+    concept = i,
+    posterior = concept.post
+  ))
 }
+gt(concept_names)
 ```
 
 ...and that's where the walkthrough ends! Next steps:
@@ -289,10 +273,10 @@ for (i in path_names){
 -   divide posterior odds by prior odds to get Bayes factor.
 
 ```{r}
+#| echo: false
+#| eval: false
 #| label: prior-only-run
 
-# have not run this yet
-# TODO update var names or something to keep separate from previous results 
 wd <- here("betaresults") 
 set.seed(404)
 # start at random spot
@@ -306,55 +290,91 @@ system.time(fitalps(iter = 100,
                     normpotts = FALSE,
                     prioronly = TRUE,
                     lik = "coxph-ties",
-                    prefix="/logs"))
+                    prefix="/prior")) # prior only run
+
+# adding p-prefix to all output 
+pfstree <- fread(paste0("./betaresults/prior-tree.txt"), sep = ";", header = FALSE)
+pfssampler <- fread(paste0("./betaresults/prior-sampler.txt"), sep = "\t", header = TRUE)
+pfspsi <- fread(paste0("./betaresults/prior-psi.txt"), sep = "\t", header = TRUE)
+pfsparameters <- fread(paste0("./betaresults/prior-tree-parameters.txt"), sep = "\t", header = TRUE)
+# no thetas produced 
+
+# check hyperparameter
+table(pfspsi$psi)
+
+# completed iterations
+pniter <- nrow(pfssampler)
+pniter
+
+# acceptance rate for proposed changes
+length(pfssampler$accept[pfssampler$accept == TRUE]/pniter)
+
+# number of internal nodes
+table(pfssampler$nnodes/pniter)
+
+# distance from prior forest
+table(pfssampler$distance)
+
+# link to sampler
+pfstree$V2 <- NULL
+pfstree$treeindex <- as.numeric(substr(pfstree$V1, 1, regexpr('\\(', pfstree$V1) - 1))
+pfstree$tree <- substr(pfstree$V1, regexpr('\\(',pfstree$V1), nchar(pfstree$V1))
+pfssamplertree <- merge(pfssampler, pfstree, by.x="treeindex", by.y="treeindex", all.x=T, sort=F)
+
+##################################
+# have not edited beyond this
+# TODO continue adding p-prefix
+# tree posteriors
+treepost <- aggregate(fssamplertree$tree, by=list(fssamplertree$tree), FUN=function(x){NROW(x)})
+names(treepost) <- c("tree","count")
+treepost$post <- treepost$count/nrow(fssampler)
+treepost$perc <- treepost$post*100
+treeprior <- mean(treepost$post)
+treepost$BF <- round((treepost$post/(1-treepost$post))/(treeprior/(1-treeprior)),0)
+print(treepost)
 ```
 
-Below is code to do combinations of rs instead if needed; not sure what ALPS actually needs.
+### Descriptive analysis
+
+Number of recurrences and distribution of follow up time
 
 ```{r}
-#| label: rs
-snp_list <- read_csv("./data/pathwaysnps.csv", show_col_types = FALSE)
+#| label: descriptives
+#| tbl-cap: "Events"
+#| fig-cap: "Distribution of follow-up time"
 
-pair_off <- function(dataset, combos){
-  all_pairs <- list()
-  for (combos in combos){
-    subset1 <- filter(dataset, step == combos[1])
-    subset2 <- filter(dataset, step == combos[2])
-#    paired_list <- expand.grid(SNP1 = subset1$SNP, rs1 = subset1$rs, step1 = subset1$step, SNP2 = subset2$SNP,rs2 = subset2$rs, step2 = subset2$step, stringsAsFactors = FALSE)
-    paired_list <- expand.grid(rs1 = subset1$rs, rs2 = subset2$rs, stringsAsFactors = FALSE)
-    
-  all_pairs[[paste(combos, collapse = "&")]] <- paired_list
-  }
-  return(all_pairs)
-}
+# Number of events and non-events
+table(simgeno$event)
 
-# note function doesn't remove same rs pairings
-prior_pairs <- list(c(1,1), c(2,2), c(3,3), c(4,4), c(5,5), c(1,3), c(3,5), c(2,4))
+# Distribution of follow-up time
+summary(simgeno$time)
 
-new_list <- pair_off(snp_list, prior_pairs)
-new_snp_list <- do.call(rbind, new_list)
+ggplot(simgeno, aes(x=time)) + geom_histogram(binwidth = 50) +
+  theme_bw()
+```
 
-# want to link snp names and step number back to rs 
-snp_names1 <- snp_list %>%
-  rename(snp1 = SNP,
-         rs1 = rs,
-         step1 = step)
-snp_names2 <- snp_list %>%
-  rename(snp2 = SNP,
-         rs2 = rs,
-         step2 = step)
+#### Conventional associations
 
-new_snp_list <- new_snp_list %>% 
-  # have to delete same snp pairs (i think)
-  filter(rs1 != rs2) %>%
-  left_join(snp_names1, by="rs1", relationship = "many-to-many") %>%
-  left_join(snp_names2, by="rs2", relationship = "many-to-many") %>%
-  distinct()
+Model 01: fully saturated model
 
-prior_forest <- new_snp_list[, c("snp1", "rs1", "step1", "snp2", "rs2", "step2")]  %>%
-  mutate(prior = paste("(",new_snp_list$step1,",",new_snp_list$step2,");", sep = ""))
-# check
-head(prior_forest)
+```{r}
+#| label: conventional-assoc
+#| message: false
+#| tbl-cap: "Reg table"
+#| fig-cap: "HR"
 
-write_csv(prior_forest, "./data/priorforest.csv")
+# for plottinig
+library(survminer)
+
+model01 <- coxph(Surv(time, event) ~ (
+  abc1 + abc2 + abc3 + abc4 + abc5 + abc6 + cyp1 + cyp2 + cyp3 + cyp4 + cyp5 + gst1 + slc1 + slc2 + slc3),
+  ties = "breslow",
+  data = simgeno)
+
+as_gt(tbl_regression(model01))
+
+# can further refine this 
+ggforest(model01, data = simgeno)
+
+
 ```
