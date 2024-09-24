@@ -10,7 +10,7 @@ Project: Using ALPS for taxane metabolic pathway and breast cancer recurrence
 
 Author: Chrystelle Kiang
 
-Last updated: July 2, 2024
+Last updated: August 2, 2024
 
 ```{r}
 #| echo: true
