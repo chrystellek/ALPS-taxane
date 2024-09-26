@@ -1,0 +1,166 @@
+---
+title: "Missing data imputation for taxane/ALPS project"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+Last updated: 26 September 2024 by Chrystelle Kiang
+
+This is a quarto document with code chunks: can run each code chunk to check, then click render and it should result in an html document in the same folder that this file is saved in. It may open in a web browser, if so, save that html file. This is similar to RMarkdown, text in between code chunks is just regular text. 
+
+The parts of code to be edited are tagged with #TODO.
+
+This version is if the cpr can't be added to the new merged dataset. 
+
+```{r}
+#| label: setup
+#| warning: false
+
+# install packages as necessary 
+# install.packages("tidyverse")
+# install.packages("mice")
+# install.packages("lattice")
+# install.packages("here") # here sets the wd to wherever this file is located 
+# install.packages("haven")
+
+library(tidyverse)
+library(mice)
+library(lattice) 
+library(haven)
+library(here)
+```
+
+General approach: same gene families are used to impute any missings with each other. First producing output to get a sense of % missing.
+
+```{r}
+#| label: read-in 
+# TODO filepath/name for dataset
+# if in same folder as this file, the . should be okay
+# otherwise put in file path
+missdata <- read_sas("./FILENAME.sas7bdat")
+# creating new ID variable to take place of cpr so rest of code is largely unchanged
+missdata <- missdata %>%
+  mutate(idnum = row_number())
+
+# forcing column order 
+mdorder <- c("idnum", "er", "p63a", "age", "irt", "ike", "stage", "surgery_type", "event", "time", "gdoseabc2", "gdoseabc3", "gdoseabc4", "gdoseabc5", "gdoseabc6", "gdoseabc7", "gdoseabc8", "gdoseabc10", "abc11", "abc12", "gdosecyp10", "gdosecyp12", "gdosecyp13", "gdosecyp14", "gdosecyp2", "gdosecyp3", "gdosecyp4", "gdosecyp5", "gdosecyp6", "gdosecyp7", "gdosecyp8", "gdosecyp9", "cyp15", "cyp16", "cyp17", "gdosesul3", "gdosesul4", "gdosesul5", "gdoseugt1", "gdoseugt2", "gdoseugt3", "gst1", "slc1", "slc2", "slc3", "HSD1q_i", "HSD2p_i") 
+missdata <- missdata %>% select(all_of(mdorder))
+# confirm variables are in desired order listed above
+names(missdata)
+# summarize the dataset to show amount of missingness in variables
+summary(missdata) 
+```
+
+Prep dataset for imputation: convert appropriate variables to factor or numeric.
+
+```{r}
+#| label: prep-dataset 
+
+# convert variables to factors or numeric accordingly 
+# these are the variables to be changed, column order shouldn't matter
+cols_factor <- c("er", "p63a", "irt", "ike", "stage", "surgery_type", "event", "gdoseabc2", "gdoseabc3", "gdoseabc4", "gdoseabc5", "gdoseabc6", "gdoseabc7", "gdoseabc8", "gdosecyp10", "gdosecyp12", "gdosecyp13", "gdosecyp14", "gdosecyp2", "gdosecyp3", "gdosecyp4", "gdosecyp5", "gdosecyp6", "gdosecyp7", "gdosecyp8", "gdosecyp9", "gdosesul3", "gdosesul4",  "gdoseugt1", "gdoseugt2", "gdoseugt3", "gdoseabc10", "gdosesul5", "abc11", "abc12", "cyp15", "cyp16", "cyp17", "gst1", "slc1", "slc2", "slc3")  
+cols_num <- c("age", "time") 
+
+# convert variables 
+missdata <- missdata %>% mutate_at(cols_factor, ~factor(.)) %>%
+    mutate_at(cols_num, ~ as.numeric(.)) 
+
+# can confirm changes
+# str(missdata) 
+```
+
+Next, creating predictor matrix to reflect imputation strategy: use same gene family/group to impute within; otherwise ER, p63a, irt, chemo, stage, surgery are use for each gene family. Those vars not informed by genes. Event and time not imputed, if missing.
+
+```{r}
+#| label: pMatrix-initial
+
+# creating empty matrix that is ncols x ncols of missdata 
+# set default as 0, so nothing informs anything yet
+pred_matrix <- matrix(0L, nrow = dim(missdata)[2], ncol = dim(missdata)[2])
+# setting cols and rows to match data
+colnames(pred_matrix) <- colnames(missdata)
+rownames(pred_matrix) <- colnames(missdata)
+
+# set vars to be used to inform missings as 1, then set diag back to 0 
+# column 0/1 informs if used to impute row variable 
+pred_matrix <- pred_matrix %>% 
+  as.data.frame(.) %>%
+  # column order was forced in earlier steps 
+    mutate(across(2:8, ~ 1),
+           across(gdoseabc2:abc12, ~ ifelse(row_number() %in% 11:20, 1, 0)),
+           across(gdosecyp10:cyp17, ~ ifelse(row_number() %in% 21:35, 1, 0)),
+           across(gdosesul3:gdosesul5, ~ ifelse(row_number() %in% 36:38, 1, 0)),
+           across(gdoseugt1:gdoseugt3, ~ ifelse(row_number() %in% 39:41, 1, 0)),
+           across(gst1, ~ ifelse(row_number() %in% 42, 1, 0)),
+           across(slc1:slc3, ~ ifelse(row_number() %in% 43:45, 1, 0))
+           )
+# setting diagonals back to 0
+diag(pred_matrix) <- 0
+# set these rows to 0, variables don't need to be imputed if missing
+pred_matrix[c("event", "time", "HSD1q_i", "HSD2p_i"), ] <- 0
+pred_matrix <- as.matrix(pred_matrix) 
+
+# TODO change file name here, would like to get predictor matrix 
+# with here package, the . directs to folder where this R file is in
+# can just replace with filepath
+write.csv(pred_matrix, "./pmatrix.csv")
+
+
+# initial imputation model
+ini <- mice(missdata, seed = 2718, maxit = 0)
+# can check imputation method
+ini$method
+# not planning to overwrite any methods
+```
+
+Now, to do the imputation and aggregate mean genotype for each.
+
+```{r}
+#| label: imputation
+imputed_dataset <- mice(data = missdata, m = 10, seed = 2718,
+                predictorMatrix = pred_matrix, printFlag = TRUE)
+imputed_dataset$loggedEvents
+# logged events should be NULL if all goes well 
+
+# stack all imputed datasets 
+imp_long <- mice::complete(imputed_dataset, action = "long")
+
+gene_vars <- colnames(c("gdoseabc2", "gdoseabc3", "gdoseabc4", "gdoseabc5", "gdoseabc6", "gdoseabc7", "gdoseabc8", "gdoseabc10", "abc11", "abc12", "gdosecyp10", "gdosecyp12", "gdosecyp13", "gdosecyp14", "gdosecyp2", "gdosecyp3", "gdosecyp4", "gdosecyp5", "gdosecyp6", "gdosecyp7", "gdosecyp8", "gdosecyp9", "cyp15", "cyp16", "cyp17", "gdosesul3", "gdosesul4", "gdosesul5", "gdoseugt1", "gdoseugt2", "gdoseugt3", "gst1", "slc1", "slc2", "slc3"))
+# have to subtract 1 because R starts at 1; we want 0,1,2 not 1,2,3
+imp_long <- imp_long %>% mutate_at(gene_vars, ~ as.numeric(.) - 1)
+
+# function for aggregation (mean --> round to nearest integer)
+# based on MM/TPA code, updated because of tidyverse deprecation 
+calculate_mean <- function(df, var_list) {
+  df %>%
+    rowwise() %>%
+    mutate(across(all_of(var_list), 
+                     .fns = list(imp = ~round(mean(., na.rm = TRUE), digits = 1)))) # avg and round to 1 decimal place
+}
+
+# apply function to get mean 
+imp_agg <- calculate_mean(imp_long, gene_vars)
+
+# using this example compare %s for aggregated imputed data vs. complete data 
+# %s should be similar
+addmargins(table("N complete data: abc2" = missdata$gdoseabc2))
+prop.table(table("Proportion complete data: abc2" = missdata$gdoseabc2))
+
+addmargins(table("N imputed data: abc2" = imp_agg$gdoseabc2, useNA = "ifany"))
+prop.table(table("Proportion imputed data: abc2" = imp_agg$gdoseabc2, useNA = "ifany"))
+
+# save imputed data
+# TODO can replace . with desired file path if not the same folder this code is in
+save(imp_long, file = "./taxane_imp_long.RData")
+save(imp_agg, file = "./taxane_imp_agg.RData") 
+
+# export imputed data to csv format
+write.csv(imp_long, file = "./taxane_imp_long.csv")
+write.csv(imp_agg, file = "./taxane_imp_agg.csv")
+```
+
+Then, we can use one of the taxane_imp_agg files, R or csv to retain only the newly imputed genotypes for the genes that do not have the 'gdose' prefix. 
+
+Thank you!! 
