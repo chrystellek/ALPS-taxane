@@ -1,0 +1,54 @@
+---
+title: "Steps"
+format: docx
+editor: visual
+---
+
+## Taxane ALPS
+
+This is a document about workflow and steps, mostly for my own organization.
+
+#### STATUS/TODO
+
+-   file managment/locations and provide instructions accordingly - solution currently is to have code (prior-run, alps-run) and files I send in same place (alps2.R, priortreestructure.csv, taxane_summary.csv - currently in SEND folder)
+-   question whether to keep as prior-only then alps-run vs. just writing them in same script, then new script for summarization that reads in the alps output
+    -   or keep as-is now and end up with two summaries
+    -   Question if AK can send me the /prior- and /log- files.
+-   Code to summarize output after alps (alps-processing.qmd)
+
+#### STEPS
+
+Step 1. Impute missing genotypes.
+
+-   File: missing_impute.qmd --\> output: imp_long, imp_agg datasets
+-   Required files: dataset (local in Denmark)
+-   Output: imp_long, imp_agg R and csv
+    -   Note version I sent to AK on 14 Oct did not properly create imp_agg; addressing this in prior-only and alps-run
+
+Step 2. Prior only run and create cpsi (one file)
+
+-   File: prior-only.R
+-   Required files - note these may be in different files; may want to take note of where each is
+    -   complete data (imp_long.Rdata for now; will be imp_agg if I need to run MI again)
+    -   tree structure (priorforeststructure.csv)
+    -   alps files (alps2.R)
+-   Output: 4 text files (prefix "prior-") and 1 RData object (cpsi_taxane.RData) and 1 dataset (genodata.rds; unless there is a solve later) - user-specified locations
+
+Step 3. Run ALPS
+
+-   File: alps-run.qmd
+-   Inputs; need to figure out folders/file management
+    -   complete data (genodata.rds)
+
+    -   alps2
+
+    -   priorforeststructure
+-   Output: html file (alps-run.html hopefully) and 5 text files (prefix "log-")
+-   
+
+Step 5. further ALPS summarization
+
+-   File: alps-processing
+-   can be done after ALPS-run code is sent/running
+
+### 

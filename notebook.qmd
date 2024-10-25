@@ -58,8 +58,22 @@ Trying out with scrambled data, but changed the names to match our study SNPs an
 prior_forest <- read_csv("./data/priorforest.csv", show_col_types = FALSE)
 prior.forest <- subset(prior_forest, select = c("snp1","snp2"))
 
-# import scrambled dataset
-simgeno <- read_csv(file = "./data/simpath_cohort_scramCK.csv", show_col_types = FALSE)
+# import dataset
+# simgeno <- read_csv(file = "./data/simpath_cohort_scramCK.csv", show_col_types = FALSE)
+# I realize imp_agg has not done what i expected
+load("./taxane_imp_long.RData")
+
+gene_vars <- colnames(c("gdoseabc2", "gdoseabc3", "gdoseabc4", "gdoseabc5", "gdoseabc6", "gdoseabc7", "gdoseabc8", "gdoseabc10", "abc11", "abc12", "gdosecyp10", "gdosecyp12", "gdosecyp13", "gdosecyp14", "gdosecyp2", "gdosecyp3", "gdosecyp4", "gdosecyp5", "gdosecyp6", "gdosecyp7", "gdosecyp8", "gdosecyp9", "cyp15", "cyp16", "cyp17", "gdosesul3", "gdosesul4", "gdosesul5", "gdoseugt1", "gdoseugt2", "gdoseugt3", "gst1", "slc1", "slc2", "slc3"))
+
+imp_agg_new <- imp_long %>%
+  group_by(cpr) %>%
+  summarise(across(all_of(gene_vars),
+                   ~round(mean(., na.rm = TRUE), 1),
+                   .names = "{col}"),
+            across(!all_of(gene_vars), first, .names = "{col}")) %>% 
+  ungroup()
+  
+
 # only keeping snp names we are using
 simgeno <- simgeno %>%
   select(-abc10, -c(abc7:abc9), -c(cyp10:cyp14), -c(cyp6:cyp9), -sul5, -ugt2, -ugt3, -sul2)
