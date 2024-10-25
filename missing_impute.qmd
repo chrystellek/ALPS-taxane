@@ -13,7 +13,7 @@ This is a quarto document with code chunks: can run each code chunk to check, th
 
 \--
 
-Last updated: 09 October 2024 by Chrystelle Kiang
+Last updated: 24 October 2024 by Chrystelle Kiang
 
 The parts of code to be edited are tagged with #TODO.
 
@@ -35,13 +35,15 @@ library(haven)
 library(here)
 ```
 
-General approach: same gene families are used to impute any missings with each other.
+General approach was to use same gene families to impute any missings with each other. BUT that may have worked for tamoxifen, but using those complete tamoxifen genotype data and clinical variables is too complex of a model. So now (24 Oct) I am updating so that: only *ABCC2* and *ABCG2* variants imputed based on others in same gene, not going across families as before. For the CYPs, *CYP3A4* will try to use *CYP3A* and *CYP3A5* given same chromosome, but *CYP1B1* does not share chrom or LD with any previous cyp. For *CYP1B1, GSTP1, and SLCOB1B1/3,* will then use clinical characteristics.
 
 ```{r}
 #| label: read-in 
 
 # TODO filepath for dataset
-missdata <- read_sas("//uni.au.dk/dfs/HE_KEA-DCESAS02/S/STAT/Projects/0113 065 ProBeCaRe/ALPs taxane study/Data/ALPs_taxanes_missing.sas7bdat")
+# missdata <- read_sas("//uni.au.dk/dfs/HE_KEA-DCESAS02/S/STAT/Projects/0113 065 ProBeCaRe/ALPs taxane study/Data/ALPs_taxanes_missing.sas7bdat")
+
+missdata <- read.csv("./data/dummymissdatanew.csv")
 
 # forcing column order - note this changed since last time but code should still work
 mdorder <- c("cpr", "gdoseabc2", "gdoseabc3", "gdoseabc4", "gdoseabc5", "gdoseabc6", "gdoseabc7", "gdoseabc8", "gdoseabc10", "abc11", "abc12", "gdosecyp10", "gdosecyp12", "gdosecyp13", "gdosecyp14", "gdosecyp2", "gdosecyp3", "gdosecyp4", "gdosecyp5", "gdosecyp6", "gdosecyp7", "gdosecyp8", "gdosecyp9", "cyp15", "cyp16", "cyp17", "gdosesul3", "gdosesul4", "gdosesul5", "gdoseugt1", "gdoseugt2", "gdoseugt3", "gst1", "slc1", "slc2", "slc3", "er", "p63a", "age", "irt", "ike", "stage", "surgery_type", "event", "time", "HSD1q_i", "HSD2p_i") 
@@ -106,21 +108,25 @@ rownames(pred_matrix) <- colnames(missdata)
 pred_matrix <- pred_matrix %>% 
   as.data.frame(.) %>%
   # column order was forced in earlier steps so using row number to set those blocks, e.g., gdoseabc2:abc12 are cols 2:11 as well
-# thought is that abcs, cyps to not inform each other, only gdoseabc and gdosecyp inform
-    mutate(across(gdoseabc2:abc12, ~ ifelse(row_number() %in% 2:11, 1, 0)),
-           across(abc11:abc12, ~ ifelse(row_number() %in% 2:11, 1, 0)).
-           across(gdosecyp10:cyp17, ~ ifelse(row_number() %in% 12:26, 1, 0)),
+  # across selects columns
+# now updating based on new strategy 24-Oct
+    mutate(across(gdoseabc5:gdoseabc7, ~ ifelse(row_number() == 10, 1, 0)), #abc11
+           across(gdoseabc8:gdoseabc10, ~ ifelse(row_number() == 11, 1, 0)), #abc12
+           across(gdosecyp13:gdosecyp14, ~ ifelse(row_number() %in% 25:26, 1, 0)), #cyp16
+           # this will get overwritten later to 0.. but mentally helps me keep track
+           across(cyp15, ~ ifelse(row_number() == 24, 1, 0)), 
+           across(cyp16:cyp17, ~ ifelse(row_number() %in% 25:27, 1, 0)), # these can inform each other as well 
+           # the sul and ugt are not missing but leaving in to be consistent i guess.. makes pMatrix easier to read perhaps
            across(gdosesul3:gdosesul5, ~ ifelse(row_number() %in% 27:29, 1, 0)),
            across(gdoseugt1:gdoseugt3, ~ ifelse(row_number() %in% 30:32, 1, 0)),
-           across(gst1, ~ ifelse(row_number() %in% 33, 1, 0)),
+           across(gst1, ~ ifelse(row_number() == 33, 1, 0)),
            across(slc1:slc3, ~ ifelse(row_number() %in% 34:36, 1, 0)),
-           # set whole column for er, p63a, age, rad, chemo, stage, surgery
-           across(37:43, ~ 1)
-           )
+           # set whole column for er, p63a, age, rad, chemo, stage, surgery ONLY for cyp15, gst1, slc1:slc3, and stage
+           across(37:43, ~ ifelse(row_number() %in% c(24, 33:36, 42), 1, 0)))
+
 # setting diagonals back to 0
 diag(pred_matrix) <- 0
 # set these rows to 0, variables don't need to be imputed if missing
-#pred_matrix[abc11, abc12] <- 0
 pred_matrix[c("cpr", "event", "time", "HSD1q_i", "HSD2p_i"), ] <- 0 
 pred_matrix <- as.matrix(pred_matrix) 
 
@@ -136,11 +142,14 @@ ini <- mice(missdata, seed = 2718, maxit = 0,
             remove.collinear = TRUE)
 # can check imputation method
 ini_method <- ini$method
-# changing methods to address logged events
-ini_method[names(ini_method) %in% c("abc11", "abc12", "cyp15", "cyp16", "cyp17")] <- "pmm"
+
+# going to leave the prediction to default
+# I think polyreg is more ideal for 3 levels
+# leaving this in case though.
+# ini_method[names(ini_method) %in% c("abc11", "abc12", "cyp15", "cyp16", "cyp17")] <- "pmm"
 
 ini$loggedEvents
-# want this to be NULL 
+# want this to be NULL  
 ```
 
 Now, to do the imputation and aggregate mean genotype for each.
@@ -151,7 +160,7 @@ Now, to do the imputation and aggregate mean genotype for each.
 imputed_dataset <- mice(data = missdata, m = 50, seed = 2718,
                         method = ini_method,
                 predictorMatrix = pred_matrix, 
-                printFlag = TRUE)
+                printFlag = TRUE) 
 
 imputed_dataset$loggedEvents
 # logged events should be NULL if all goes well 
@@ -163,17 +172,29 @@ gene_vars <- colnames(c("gdoseabc2", "gdoseabc3", "gdoseabc4", "gdoseabc5", "gdo
 # have to subtract 1 because R starts at 1; we want 0,1,2 not 1,2,3
 imp_long <- imp_long %>% mutate_at(gene_vars, ~ as.numeric(.) - 1)
 
-# function for aggregation (mean --> round to nearest integer)
-# based on MM/TPA code, updated because of tidyverse deprecation 
-calculate_mean <- function(df, id_col, var_list) {
-  df %>%
-    group_by({{ id_col }}) %>%
-    mutate(across(all_of(var_list), 
-                     .fns = list(imp = ~round(mean(., na.rm = TRUE), digits = 1)))) # avg and round to 1 decimal place
-}
-
-# apply function to get mean 
-imp_agg <- calculate_mean(imp_long, cpr, gene_vars)
+# new code to aggregate mean --> round to nearest integer)
+# based on MM/TPA code, but updated because of tidyverse deprecation # creating summarized dataset from imp_long 
+imp_agg <- imp_long %>%
+  group_by(cpr) %>%
+  summarise(across(all_of(gene_vars),
+                   ~round(mean(., na.rm = TRUE), 1), 
+                   # round mean to 1 digit across imputations
+                   .names = "{col}"), 
+            # just taking first occurence of the rest of variables
+            across(!all_of(gene_vars), first, .names = "{col}")) %>% 
+  ungroup() %>%
+  select(cpr, 
+         gdoseabc2, gdoseabc3, gdoseabc4, abc11, abc12,
+         gdosecyp13, gdosecyp14, cyp15, cyp16, cyp17, 
+         gst1, slc1, slc2, slc3,
+         er, p63a, age, irt, ike, stage, surgery_type,
+         event, time) %>%
+  # changing to have consistent alias naming
+  rename(abc2 = gdoseabc2,
+         abc3 = gdoseabc3,
+         abc4 = gdoseabc4,
+         cyp13 = gdosecyp13,
+         cyp14 = gdosecyp14)
 
 # using this example compare %s for aggregated imputed data vs. complete data 
 # %s should be similar
@@ -190,13 +211,34 @@ If all goes well, files can be saved!
 # save imputed data
 # TODO can replace . with desired file path if not the same folder this code is in
 save(imp_long, file = "./taxane_imp_long.RData")
-save(imp_agg, file = "./taxane_imp_agg.RData") # I think this will be used for ALPS
+save(imp_agg, file = "./taxane_imp_agg.RData") 
 
-# export imputed data to csv format
+# export imputed data to csv format - in case
 write.csv(imp_long, file = "./taxane_imp_long.csv")
 write.csv(imp_agg, file = "./taxane_imp_agg.csv")
 ```
 
-One of the taxane_imp_agg files will be read into for ALPS (separate code file).
+If it does not go well, then trying to just get a regression model for missing variables, to see if there are particular variants that predict others.
 
-Thank you!!
+```{r}
+#| label: reg-dx
+#| eval: false 
+
+install.packages("nnet")
+library(nnet)
+# might need to restart after install; I did 
+missdata <- read_sas("//uni.au.dk/dfs/HE_KEA-DCESAS02/S/STAT/Projects/0113 065 ProBeCaRe/ALPs taxane study/Data/ALPs_taxanes_missing.sas7bdat")
+
+# if any of these still have logged errors, want to see if any are single strong/better predictors
+model_abc11 <- multinom(abc11 ~ gdoseabc5 + gdoseabc6 + gdoseabc7, data = missdata)
+summary(model_abc11)
+
+model_abc12 <- multinom(abc12 ~ gdoseabc8 + gdoseabc9 + gdoseabc10, data = missdata)
+summary(model_abc12)
+
+model_cyp16 <- multinom(cyp16 ~ gdosecyp13 + gdosecyp14 + cyp17, data = missdata)
+summary(model_cyp16)
+
+model_cyp17 <- multinom(cyp17 ~ gdosecyp13 + gdosecyp14 + cyp16, data = missdata)
+summary(model_cyp17)
+```
