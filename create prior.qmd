@@ -1,0 +1,83 @@
+---
+title: "create prior"
+format: html
+editor: visual
+---
+
+## Creating prior structure
+
+Chrystelle Kiang
+
+```{r}
+#| echo: true
+#| warning: false
+
+# set up
+library(here)
+library(tidyverse)
+```
+
+### Prior forest
+
+After discussion with Cathrine, Dee, Tore, Tom, and Tim, we have the following pathway as of end of Nov 2023. To consider *SLCO1B1* and *ABCB1* haplotypes. Most genes only have one SNP, except: *SLCO1B1* (2), *CYP3A4* (2), and *ABCB1* (4).
+
+![](images/taxanepathway.jpg){fig-align="center"}
+
+Want to encode the direct paths between two 'nodes'; either 1 or 2 steps (based on tam). Examples:\
+(1,1): docetaxel -\> (1,1) -\> docetaxel in liver\
+(1,3): docetaxel -\> (1,1) -\> docetaxel in liver -\> (3,3) -\> metabolite in liver\
+(3,3): docetaxel in liver -\> (3,3) -\> metabolite in liver\
+(3,5): docetaxel in liver -\> (3,3) -\> metabolite -\> (5,5) -\> plasma concentration
+
+Note that one of *ABCB1* (rs10248420) was excluded due to low call rates
+
+```{r}
+
+# Used R to create permutations based on imported file with SNPs and step/locus number as per diagram above
+# last updated 15 October with new naming
+
+snp_list <- read_csv("./data/pathwaysnp.csv", show_col_types = FALSE)
+
+pair_off <- function(dataset, combos){
+  all_pairs <- list()
+  for (combo in combos){
+    subset1 <- filter(dataset, step == combo[1])
+    subset2 <- filter(dataset, step == combo[2])
+    paired_list <- expand.grid(snp1 = subset1$alias, snp2 = subset2$alias, stringsAsFactors = FALSE)
+    
+  all_pairs[[paste(combo, collapse = "&")]] <- paired_list
+  }
+  return(all_pairs)
+}
+
+# note function doesn't remove same snp pairings
+prior_pairs <- list(c(1,1), c(2,2), c(3,3), c(4,4), c(5,5), c(1,3), c(3,5), c(2,4))
+
+new_list <- pair_off(snp_list, prior_pairs)
+new_snp_list <- do.call(rbind, new_list)
+
+# want to link step number back to rs 
+snp_names1 <- snp_list %>%
+  rename(snp1 = alias,
+         step1 = step)
+snp_names2 <- snp_list %>%
+  rename(snp2 = alias,
+         step2 = step)
+
+new_snp_list <- new_snp_list %>% 
+  # have to delete same snp pairs (i think)
+  filter(snp1 != snp2) %>%
+  left_join(snp_names1, by="snp1", relationship = "many-to-many") %>%
+  left_join(snp_names2, by="snp2", relationship = "many-to-many") %>%
+  distinct()
+
+prior_forest <- new_snp_list[, c("snp1", "step1", "snp2", "step2")]  %>%
+  mutate(prior = paste("(",new_snp_list$step1,",",new_snp_list$step2,");", sep = "")) %>%
+  # seemed like some combinations I didn't want still occuring
+  filter(prior %in% c("(1,1);", "(2,2);", "(3,3);", "(4,4);", "(5,5);", "(1,3);", "(3,5);", "(2,4);")) %>%
+  select(-step1, -step2)
+
+# creating duplicate for backup
+prior_forest_save <- prior_forest 
+write_csv(prior_forest, "./data/priorforeststructure.csv")
+```

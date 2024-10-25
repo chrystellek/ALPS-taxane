@@ -1,0 +1,96 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+This is where to pick up after walkthrough ends. Should be able to run this with ALPS output, so can get this to AK after ALPS is running. Question of what he can and cannot send in terms of ALPS output files
+
+Next steps:
+
+1.  generate concept probabilities from prior-only ALPS run and then calculate prior odds (p/(1-p))
+2.  calculate posterior odds from posterior probabilies
+3.  divide posterior odds by prior odds to get Bayes factor.
+
+```{r}
+#| echo: false
+#| eval: false
+#| label: prior-only-run
+
+# TODO some of this is already produced in prior-only ?
+# note i am adding p prefix to differentiate prior vs. non-prior files 
+wd <- here("betaresults") 
+set.seed(404)
+# start at random spot
+spot <- prior.forest[sample(nrow(prior.forest),1),]
+spot.tree <- paste0("(", spot$snp1, ",", spot$snp2, ");")
+curtree <- read.tree(text = spot.tree)
+# start with low number to test out
+system.time(fitalps(iter = 100,
+                    initipsi = 19,
+                    curtree,
+                    normpotts = FALSE,
+                    prioronly = TRUE,
+                    lik = "coxph-ties",
+                    prefix="/prior")) # prior only run
+
+# adding p-prefix to all output 
+pfstree <- fread(paste0("./betaresults/prior-tree.txt"), sep = ";", header = FALSE)
+pfssampler <- fread(paste0("./betaresults/prior-sampler.txt"), sep = "\t", header = TRUE)
+pfspsi <- fread(paste0("./betaresults/prior-psi.txt"), sep = "\t", header = TRUE)
+pfsparameters <- fread(paste0("./betaresults/prior-tree-parameters.txt"), sep = "\t", header = TRUE)
+# no thetas produced 
+
+# check hyperparameter
+table(pfspsi$psi)
+
+# completed iterations
+pniter <- nrow(pfssampler)
+pniter
+
+# acceptance rate for proposed changes
+length(pfssampler$accept[pfssampler$accept == TRUE]/pniter)
+
+# number of internal nodes
+table(pfssampler$nnodes/pniter)
+
+# distance from prior forest
+table(pfssampler$distance)
+
+# link to sampler
+pfstree$V2 <- NULL
+pfstree$treeindex <- as.numeric(substr(pfstree$V1, 1, regexpr('\\(', pfstree$V1) - 1))
+pfstree$tree <- substr(pfstree$V1, regexpr('\\(',pfstree$V1), nchar(pfstree$V1))
+pfssamplertree <- merge(pfssampler, pfstree, by.x="treeindex", by.y="treeindex", all.x=T, sort=F)
+
+##################################
+# have not edited beyond this
+# TODO continue adding p-prefix
+# tree posteriors
+treepost <- aggregate(fssamplertree$tree, by=list(fssamplertree$tree), FUN=function(x){NROW(x)})
+names(treepost) <- c("tree","count")
+treepost$post <- treepost$count/nrow(fssampler)
+treepost$perc <- treepost$post*100
+treeprior <- mean(treepost$post)
+treepost$BF <- round((treepost$post/(1-treepost$post))/(treeprior/(1-treeprior)),0)
+print(treepost)
+```
+
+### Descriptive analysis
+
+Number of recurrences and distribution of follow up time
+
+```{r}
+#| label: descriptives
+#| tbl-cap: "Events"
+#| fig-cap: "Distribution of follow-up time"
+
+# Number of events and non-events
+table(simgeno$event)
+
+# Distribution of follow-up time
+summary(simgeno$time)
+
+ggplot(simgeno, aes(x=time)) + geom_histogram(binwidth = 50) +
+  theme_bw()
+```
