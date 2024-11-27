@@ -1,0 +1,325 @@
+---
+title: "Taxane metabolic pathway"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+## ALPS results
+
+This is meant to generate the results from ALPS; ideally would be able to run ALPS in one place, then this file can be rendered.
+
+Still need code for:
+
+-   Table 1/study population descriptives
+
+-   Number of events in study population (?)
+
+```{r}
+#| label: setup
+#| warning: false
+#| message: false
+
+library(here)
+library(tidyverse)
+# for ALPS:
+#library(ape)
+#library(phytools)
+#library(geiger)
+library(data.table)
+#library(stringr)
+# other 
+library(survival)
+library(ggplot2)
+library(gtsummary)
+library(gt)
+# load ALPS functions
+source(file = paste0("./alps2.R")) # alps
+```
+
+Summarize results
+
+```{r}
+#| label: ALPS-summarize-posterior
+fstree <- fread(paste0("./output/logs-tree.txt"), sep = ";", header = FALSE)
+fssampler <- fread(paste0("./output/logs-sampler.txt"), sep = "\t", header = TRUE)
+fspsi <- fread(paste0("./output/logs-psi.txt"), sep = "\t", header = TRUE)
+fsparameters <- fread(paste0("./output/logs-tree-parameters.txt"), sep = "\t", header = TRUE)
+fsthetas <- fread(paste0("./output/logs-tree-thetas.txt"), sep = "\t", header = TRUE)
+
+# check hyperparameter, looking for a spread/range 
+table(fspsi$psi)
+
+# completed iterations
+niter <- nrow(fssampler)
+niter
+
+# acceptance rate for proposed changes
+length(fssampler$accept[fssampler$accept == TRUE])/nrow(fssampler)
+
+# number of internal nodes
+table(fssampler$nnodes/nrow(fssampler))
+
+# distance from prior forest
+table(fssampler$distance)
+```
+
+#### Tree structures
+
+```{r}
+#| label: tree-structures-posterior
+
+# link to sampler
+fstree$V2 <- NULL
+fstree$treeindex <- as.numeric(substr(fstree$V1,1,regexpr('\\(', fstree$V1)-1))
+fstree$tree <- substr(fstree$V1,regexpr('\\(',fstree$V1), nchar(fstree$V1))
+fssamplertree <- merge(fssampler,fstree,by.x="treeindex",by.y="treeindex",all.x=T,sort=F)
+
+# tree posteriors
+treepost <- aggregate(fssamplertree$tree, by=list(fssamplertree$tree), FUN=function(x){NROW(x)})
+names(treepost) <- c("tree","count")
+treepost$post <- treepost$count/nrow(fssampler)
+treepost$perc <- treepost$post*100
+# TODO confirm this is fine and not referring to prior-only run
+treeprior <- mean(treepost$post)
+treepost$BF <- round((treepost$post/(1-treepost$post))/(treeprior/(1-treeprior)),0)
+
+# print(treepost)
+# gt(treepost)
+treepost %>%
+  filter(count > 1000) %>%
+  select(-perc) %>%
+  arrange(desc(BF)) %>%
+  gt() %>%
+  tab_header(title = "ALPS Tree Posteriors and BF > 1")
+```
+
+The above is a subset because there were a LOT of tree posteriors. Including at the end of this document.
+
+#### Posterior odds for individual variants
+
+```{r}
+#| label: posterior-odds
+#| tbl-cap: "Marginal posteriors"
+text <- paste(treepost$tree,";",sep = "")
+temp <- read.tree(text = text)
+getlabels <- function(tree){
+  return(tree$tip.label)
+}
+
+tips <- lapply(temp, getlabels)
+nt <- unique(unlist(tips))
+main <- matrix(0, ncol = length(nt))
+names(main) <- nt
+for (i in 1:nrow(treepost)){
+  main[tips[[i]]] <- main[tips[[i]]] + treepost$count[i]
+}
+mainpost <- data.frame(count = main, post = main/niter)
+
+# Bayes factors (BF)
+# TODO confirm that this should be created from this vs. from prior files 
+mainprior <- mean(mainpost$post)
+mainpost$bf <- round((mainpost$post/(1 - mainpost$post))/
+                       (mainprior/(1 - mainprior)),0)
+
+# Genetic factor marginal posteriors
+# mainpost
+# TODO add column names 
+gt(mainpost,
+   rownames_to_stub = TRUE)
+```
+
+```{r}
+#| tbl-cap: "Trees with BF>=1"
+#| label: post-cladograms
+
+# parameters for any tree with BF >= 1
+treepost$perc <- round(treepost$post*100)
+s <- subset(treepost,BF>=1)
+gt(s)
+
+s2 <- subset(mainpost, bf >= 1)
+
+# plot cladograms of selected tree structures
+par(mfrow = c(2,2))
+
+s3 <- data.frame(
+  tree = character(),
+  beta = numeric(),
+  theta.1 = numeric(),
+  theta.2 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (i in 1:nrow(s)) {
+	print(s$tree[i])
+	ti <- min(fstree[fstree$tree == s$tree[i]]$treeindex)
+	tiparam <- subset(fsparameters, treeindex == ti)
+	print(tiparam)
+	tithetas <- subset(fsthetas, treeindex == ti)
+	print(tithetas)
+	t <- read.tree(text = paste0(s$tree[i], ";"))
+	plot(t,root.edge = TRUE, main = paste0("Posterior: ", s$perc[i], "% BF:", s$BF[i]), type = "cladogram", sub = paste0("beta=", round(tiparam$beta, 2)))
+	edgelabels(round(as.vector(t(subset(tithetas, select = c("theta.1", "theta.2")))), 2))
+	par(ask=TRUE) 
+	  s3 <- rbind(s3, data.frame(
+    tree = s$tree[i],
+    treeindex = tiparam$treeindex,
+    beta = tiparam$beta,
+    nnodes = tiparam$nnodes,
+    negloglike = tiparam$negloglik,
+    logpost = tiparam$logpost,
+    distance = tiparam$distance,
+    theta.1 = tithetas$theta.1,
+    theta.2 = tithetas$theta.2
+  ))
+}
+
+s3 %>%
+  mutate(beta = round(beta, 2),
+         theta.1  = round(theta.1, 2),
+         theta.2  = round(theta.2, 2)) %>%
+  gt()
+```
+
+Looks like we do get trees, though simple.
+
+```{r}
+#| label: concept-posterior
+
+path <- read.csv("./taxane_summary.csv", header = TRUE)
+
+path_names <- names(path)[4:8]
+concept_names <- data.frame()
+for (i in path_names){
+  cur <- subset(path, !is.na(path[i]))
+  
+  concept.post <- 0
+  for (j in 1:nrow(treepost)){
+    test <- any(tips[[j]] %in% cur$datavar)
+    if(test) {
+      concept.post <- concept.post + treepost$count[j]
+    }	
+  }
+  concept.post <- concept.post/niter
+  print(paste0("concept:", i , " posterior:", concept.post))
+  concept_names <- rbind(concept_names, data.frame(
+    concept = i,
+    posterior = concept.post
+  ))
+}
+gt(concept_names)
+```
+
+Next steps:
+
+To calculate Bayes factors for the pathway concepts:
+
+-   generate concept probabilities from a prior-only ALPS run, and convert to prior odds (P/1-P)
+
+-   calculate posterior odds from the posterior probabilities in the output above
+
+-   divide the posterior odds by the prior odds to yield the Bayes factor
+
+```{r}
+#| label: prior-odds
+#| eval: false
+#| include: false
+
+prior_fstree <- fread(paste0("./priorAK/prior-tree.txt"), sep = ";", header = FALSE)
+prior_fssampler <- fread(paste0("./priorAK/prior-sampler.txt"), sep = "\t", header = TRUE)
+prior_fsparameters <- fread(paste0("./priorAK/prior-tree-parameters.txt"), sep = "\t", header = TRUE)
+
+prior_niter <- nrow(prior_fssampler)
+prior_niter
+
+prior_fstree$V2 <- NULL
+prior_fstree$treeindex <- as.numeric(substr(prior_fstree$V1,1,regexpr('\\(', prior_fstree$V1)-1))
+prior_fstree$tree <- substr(prior_fstree$V1,regexpr('\\(',prior_fstree$V1), nchar(prior_fstree$V1))
+prior_fssamplertree <- merge(prior_fssampler, prior_fstree, by.x="treeindex", by.y="treeindex", all.x=T, sort=F)
+
+prior_treepost <- aggregate(prior_fssamplertree$tree, by=list(prior_fssamplertree$tree), FUN=function(x){NROW(x)})
+names(prior_treepost) <- c("tree","count")
+prior_treepost$post <- prior_treepost$count/nrow(prior_fssampler)
+prior_treepost$perc <- prior_treepost$post*100
+prior_treeprior <- mean(prior_treepost$post)
+prior_treepost$BF <- round((prior_treepost$post/(1-prior_treepost$post))/(prior_treeprior/(1-prior_treeprior)),0)
+
+prior_niter <- nrow(prior_fssampler)
+prior_niter
+# adapting code from posterior odds for individual variants
+prior_text <- paste(prior_treepost$tree,";",sep = "")
+prior_temp <- read.tree(text = prior_text)
+# getlabels created earlier 
+prior_tips <- lapply(temp, getlabels)
+prior_nt <- unique(unlist(prior_tips))
+prior_main <- matrix(0, ncol = length(prior_nt))
+names(prior_main) <- prior_nt
+for (i in 1:nrow(prior_treepost)){
+  main[prior_tips[[i]]] <- prior_main[prior_tips[[i]]] + prior_treepost$count[i]
+}
+# prior_mainpost <- data.frame(count = main, post = main/niter)
+
+# Bayes factors (BF)
+# TODO confirm that this should be created from this vs. from prior files 
+# mainprior <- mean(mainpost$post)
+# mainpost$bf <- round((mainpost$post/(1 - mainpost$post))/
+#                       (mainprior/(1 - mainprior)),0)
+```
+
+I compared results with both me running 1 million with prior and dummy data (since in theory, observed data not used) but also with 100 iterations that Anders ran; both look very similar. I am wondering if I am using the wrong column in the prior tree post.
+
+```{r}
+#| label: concepts-all
+path <- read.csv("./taxane_summary.csv", header = TRUE)
+
+path_names <- names(path)[4:8]
+concept_names <- data.frame()
+for (i in path_names){
+  cur <- subset(path, !is.na(path[i]))
+
+  concept.prior <- 0
+  for (j in 1:nrow(prior_treepost)){
+    test <- any(prior_tips[[j]] %in% cur$datavar)
+    if(test) {
+      concept.prior <- concept.prior + prior_treepost$count[j]
+    }   
+  }
+      concept.post <- 0
+  for (j in 1:nrow(treepost)){
+    test <- any(tips[[j]] %in% cur$datavar)
+    if(test) {
+      concept.post <- concept.post + treepost$count[j]
+    }
+  }
+  concept.post <- concept.post/niter
+  concept.prior <- concept.prior/prior_niter
+  print(paste0("concept:", i , " posterior:", concept.post, "prior:", concept.prior))
+  concept_names <- rbind(concept_names, data.frame(
+    concept = i,
+    posterior_prob = concept.post,
+    prior_prob = concept.prior
+  ))
+}
+
+# TODO why are my priors 0 and 1
+concept_table <- concept_names %>%
+  mutate(posterior_odds = posterior_prob/(1-posterior_prob),
+         prior_odds = prior_prob/(1-prior_prob),
+         BF = posterior_odds/prior_odds) 
+
+concept_table %>%
+  select(concept, posterior_prob, prior_prob, BF) %>%
+  gt()
+```
+
+A filtered version of this table is presented above, this is the full table of posterior trees:
+
+```{r}
+#| label: all-post-trees
+#| tbl-cap: "Tree posteriors and BFs (all)"
+treepost %>%
+  arrange(desc(BF)) %>%
+  gt()
+```
