@@ -1,6 +1,8 @@
 ---
 title: "Taxane metabolic pathway"
-format: html
+format: docx
+execute: 
+  echo: false
 editor: visual
 editor_options: 
   chunk_output_type: console
@@ -8,13 +10,7 @@ editor_options:
 
 ## ALPS results
 
-This is meant to generate the results from ALPS; ideally would be able to run ALPS in one place, then this file can be rendered.
-
-Still need code for:
-
--   Table 1/study population descriptives
-
--   Number of events in study population (?)
+This is meant to generate the results from ALPS; ALPS and prior-only runs done separately (ALP-run.R and prior-only-run.R)
 
 ```{r}
 #| label: setup
@@ -38,7 +34,7 @@ library(gt)
 source(file = paste0("./alps2.R")) # alps
 ```
 
-Summarize results
+### Posterior probabilities
 
 ```{r}
 #| label: ALPS-summarize-posterior
@@ -65,7 +61,7 @@ table(fssampler$nnodes/nrow(fssampler))
 table(fssampler$distance)
 ```
 
-#### Tree structures
+#### Tree structures (posterior)
 
 ```{r}
 #| label: tree-structures-posterior
@@ -88,16 +84,25 @@ treepost$BF <- round((treepost$post/(1-treepost$post))/(treeprior/(1-treeprior))
 # print(treepost)
 # gt(treepost)
 treepost %>%
-  filter(count > 1000) %>%
+  filter(BF > 1) %>%
+  rename(posterior_prob = post) %>%
   select(-perc) %>%
   arrange(desc(BF)) %>%
   gt() %>%
-  tab_header(title = "ALPS Tree Posteriors and BF > 1")
+  tab_header(title = "ALPS Tree Posteriors with BF > 1")
+
+treepost_over1000 <- treepost %>%
+  filter(count > 1000) %>%
+  rename(posterior_prob = post) %>%
+  select(-perc) %>%
+  arrange(desc(BF)) %>%
+  gt() %>%
+  tab_header(title = "ALPS Tree Posteriors with BF > 1")
 ```
 
-The above is a subset because there were a LOT of tree posteriors. Including at the end of this document.
+The above is a subset because there were a LOT of tree posteriors. Full list is at the end of this document.
 
-#### Posterior odds for individual variants
+#### Individual variants
 
 ```{r}
 #| label: posterior-odds
@@ -125,21 +130,29 @@ mainpost$bf <- round((mainpost$post/(1 - mainpost$post))/
 
 # Genetic factor marginal posteriors
 # mainpost
+mpost <- data.frame(alias = row.names(mainpost), mainpost, row.names= NULL)
 # TODO add column names 
-gt(mainpost,
-   rownames_to_stub = TRUE)
+mpost %>%
+  select(alias, count, post, bf) %>%
+  rename(posterior = post) %>%  
+  arrange(alias) %>%
+  gt() %>%
+  tab_header(title = "Genetic factor marginal posteriors")
 ```
 
+#### Posterior cladograms
+
 ```{r}
-#| tbl-cap: "Trees with BF>=1"
 #| label: post-cladograms
 
-# parameters for any tree with BF >= 1
+# parameters for any tree with BF > 1
 treepost$perc <- round(treepost$post*100)
-s <- subset(treepost,BF>=1)
-gt(s)
+s <- subset(treepost,BF > 1) 
+s %>%
+  rename(posterior = post, percent = perc) %>%
+  gt()
 
-s2 <- subset(mainpost, bf >= 1)
+s2 <- subset(mainpost, bf > 1)
 
 # plot cladograms of selected tree structures
 par(mfrow = c(2,2))
@@ -152,13 +165,14 @@ s3 <- data.frame(
   stringsAsFactors = FALSE
 )
 
+# the print() outputs are combined in a later table 
 for (i in 1:nrow(s)) {
-	print(s$tree[i])
+#	print(s$tree[i])
 	ti <- min(fstree[fstree$tree == s$tree[i]]$treeindex)
 	tiparam <- subset(fsparameters, treeindex == ti)
-	print(tiparam)
+#	print(tiparam)
 	tithetas <- subset(fsthetas, treeindex == ti)
-	print(tithetas)
+#	print(tithetas)
 	t <- read.tree(text = paste0(s$tree[i], ";"))
 	plot(t,root.edge = TRUE, main = paste0("Posterior: ", s$perc[i], "% BF:", s$BF[i]), type = "cladogram", sub = paste0("beta=", round(tiparam$beta, 2)))
 	edgelabels(round(as.vector(t(subset(tithetas, select = c("theta.1", "theta.2")))), 2))
@@ -176,40 +190,15 @@ for (i in 1:nrow(s)) {
   ))
 }
 
+
+```
+
+```{r}
 s3 %>%
   mutate(beta = round(beta, 2),
          theta.1  = round(theta.1, 2),
          theta.2  = round(theta.2, 2)) %>%
   gt()
-```
-
-Looks like we do get trees, though simple.
-
-```{r}
-#| label: concept-posterior
-
-path <- read.csv("./taxane_summary.csv", header = TRUE)
-
-path_names <- names(path)[4:8]
-concept_names <- data.frame()
-for (i in path_names){
-  cur <- subset(path, !is.na(path[i]))
-  
-  concept.post <- 0
-  for (j in 1:nrow(treepost)){
-    test <- any(tips[[j]] %in% cur$datavar)
-    if(test) {
-      concept.post <- concept.post + treepost$count[j]
-    }	
-  }
-  concept.post <- concept.post/niter
-  print(paste0("concept:", i , " posterior:", concept.post))
-  concept_names <- rbind(concept_names, data.frame(
-    concept = i,
-    posterior = concept.post
-  ))
-}
-gt(concept_names)
 ```
 
 Next steps:
@@ -222,14 +211,16 @@ To calculate Bayes factors for the pathway concepts:
 
 -   divide the posterior odds by the prior odds to yield the Bayes factor
 
+## BFs
+
+#### Prior
+
 ```{r}
 #| label: prior-odds
-#| eval: false
-#| include: false
 
-prior_fstree <- fread(paste0("./priorAK/prior-tree.txt"), sep = ";", header = FALSE)
-prior_fssampler <- fread(paste0("./priorAK/prior-sampler.txt"), sep = "\t", header = TRUE)
-prior_fsparameters <- fread(paste0("./priorAK/prior-tree-parameters.txt"), sep = "\t", header = TRUE)
+prior_fstree <- fread(paste0("./prior1m/prior-tree.txt"), sep = ";", header = FALSE)
+prior_fssampler <- fread(paste0("./prior1m/prior-sampler.txt"), sep = "\t", header = TRUE)
+prior_fsparameters <- fread(paste0("./prior1m/prior-tree-parameters.txt"), sep = "\t", header = TRUE)
 
 prior_niter <- nrow(prior_fssampler)
 prior_niter
@@ -244,37 +235,45 @@ names(prior_treepost) <- c("tree","count")
 prior_treepost$post <- prior_treepost$count/nrow(prior_fssampler)
 prior_treepost$perc <- prior_treepost$post*100
 prior_treeprior <- mean(prior_treepost$post)
-prior_treepost$BF <- round((prior_treepost$post/(1-prior_treepost$post))/(prior_treeprior/(1-prior_treeprior)),0)
+prior_treepost$BF <- round((prior_treepost$post/(1-prior_treepost$post))/(prior_treeprior/(1-prior_treeprior)), 0)
 
 prior_niter <- nrow(prior_fssampler)
 prior_niter
+
+# TODO figure this out 
 # adapting code from posterior odds for individual variants
 prior_text <- paste(prior_treepost$tree,";",sep = "")
 prior_temp <- read.tree(text = prior_text)
 # getlabels created earlier 
-prior_tips <- lapply(temp, getlabels)
+prior_tips <- lapply(prior_temp, getlabels)
 prior_nt <- unique(unlist(prior_tips))
 prior_main <- matrix(0, ncol = length(prior_nt))
+
 names(prior_main) <- prior_nt
 for (i in 1:nrow(prior_treepost)){
   main[prior_tips[[i]]] <- prior_main[prior_tips[[i]]] + prior_treepost$count[i]
 }
-# prior_mainpost <- data.frame(count = main, post = main/niter)
-
+# prior_mainprior <- data.frame(count = prior_main, post = prior_main/prior_niter)
+# This is not adding up
+# prior_mainprior$BF <- round((mainpost$post/(1 - mainpost$post))/
+#                      (prior_mainprior/(1 - prior_mainprior$post)),0)
+# gt(mainpost)
 # Bayes factors (BF)
-# TODO confirm that this should be created from this vs. from prior files 
+# TODO confirm this way vs. how it is done above? 
 # mainprior <- mean(mainpost$post)
 # mainpost$bf <- round((mainpost$post/(1 - mainpost$post))/
 #                       (mainprior/(1 - mainprior)),0)
 ```
 
-I compared results with both me running 1 million with prior and dummy data (since in theory, observed data not used) but also with 100 iterations that Anders ran; both look very similar. I am wondering if I am using the wrong column in the prior tree post.
+### Concepts
+
+Calculating posterior and prior odds from probabilities.
 
 ```{r}
 #| label: concepts-all
 path <- read.csv("./taxane_summary.csv", header = TRUE)
 
-path_names <- names(path)[4:8]
+path_names <- names(path)[4:15]
 concept_names <- data.frame()
 for (i in path_names){
   cur <- subset(path, !is.na(path[i]))
@@ -303,7 +302,6 @@ for (i in path_names){
   ))
 }
 
-# TODO why are my priors 0 and 1
 concept_table <- concept_names %>%
   mutate(posterior_odds = posterior_prob/(1-posterior_prob),
          prior_odds = prior_prob/(1-prior_prob),
@@ -311,10 +309,21 @@ concept_table <- concept_names %>%
 
 concept_table %>%
   select(concept, posterior_prob, prior_prob, BF) %>%
-  gt()
+  gt() %>%
+  cols_label(
+    concept = "Concept", posterior_prob = "Posterior Probability",
+    prior_prob = "Prior Probability", BF = "Bayes Factor") %>%
+  fmt_number(columns = c(posterior_prob, prior_prob),
+    decimals = 4) %>%
+  fmt_number(columns = BF,
+    decimals = 2)
 ```
 
-A filtered version of this table is presented above, this is the full table of posterior trees:
+![Docetaxel pathway](images/docetaxelpathway_Nov2024.png){width="600"}
+
+## Appendix
+
+This is the tree posteriors... A filtered version of this table is presented above, this is the full table of posterior trees:
 
 ```{r}
 #| label: all-post-trees
